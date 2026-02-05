@@ -1,0 +1,359 @@
+import { PrismaClient, BookingStatus, LedgerType, PayrollRuleType, MessageChannel } from "@prisma/client";
+import * as bcrypt from "bcryptjs";
+import { addDays, setHours, setMinutes, startOfDay, subDays } from "date-fns";
+
+const prisma = new PrismaClient();
+
+function eurToCents(value: number): number {
+  return Math.round(value * 100);
+}
+
+function timeToMinutes(hhmm: string): number {
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
+}
+
+async function upsertUser(email: string, name: string, password: string) {
+  const passwordHash = await bcrypt.hash(password, 10);
+  return prisma.user.upsert({
+    where: { email },
+    update: { name, passwordHash, isActive: true },
+    create: { email, name, passwordHash, isActive: true }
+  });
+}
+
+async function main() {
+  // 1) Tenant
+  const tenant = await prisma.tenant.upsert({
+    where: { slug: "lime" },
+    update: { name: "Демо-салон «Лайм»", timezone: "Europe/Berlin", currency: "EUR" },
+    create: { name: "Демо-салон «Лайм»", slug: "lime", timezone: "Europe/Berlin", currency: "EUR" }
+  });
+
+  // 2) Users
+  const admin = await upsertUser("admin@lime.local", "Администратор", "Admin123!");
+  const master1 = await upsertUser("master1@lime.local", "Мария", "Master123!");
+  const master2 = await upsertUser("master2@lime.local", "Алексей", "Master123!");
+
+  // 3) Memberships
+  await prisma.membership.upsert({
+    where: { tenantId_userId: { tenantId: tenant.id, userId: admin.id } },
+    update: { role: "owner" },
+    create: { tenantId: tenant.id, userId: admin.id, role: "owner" }
+  });
+
+  await prisma.membership.upsert({
+    where: { tenantId_userId: { tenantId: tenant.id, userId: master1.id } },
+    update: { role: "staff" },
+    create: { tenantId: tenant.id, userId: master1.id, role: "staff" }
+  });
+
+  await prisma.membership.upsert({
+    where: { tenantId_userId: { tenantId: tenant.id, userId: master2.id } },
+    update: { role: "staff" },
+    create: { tenantId: tenant.id, userId: master2.id, role: "staff" }
+  });
+
+  // 4) Staff profiles
+  const staffMaria = await prisma.staffProfile.upsert({
+    where: { tenantId_userId: { tenantId: tenant.id, userId: master1.id } },
+    update: { displayName: "Мария", isActive: true },
+    create: { tenantId: tenant.id, userId: master1.id, displayName: "Мария", isActive: true }
+  });
+
+  const staffAlexey = await prisma.staffProfile.upsert({
+    where: { tenantId_userId: { tenantId: tenant.id, userId: master2.id } },
+    update: { displayName: "Алексей", isActive: true },
+    create: { tenantId: tenant.id, userId: master2.id, displayName: "Алексей", isActive: true }
+  });
+
+  // 5) Services
+  const servicesSeed = [
+    { name: "Стрижка мужская", durationMinutes: 45, price: 25 },
+    { name: "Стрижка женская", durationMinutes: 60, price: 35 },
+    { name: "Маникюр", durationMinutes: 60, price: 30 },
+    { name: "Окрашивание", durationMinutes: 120, price: 80 }
+  ];
+
+  const services = [];
+  for (const s of servicesSeed) {
+    const created = await prisma.service.upsert({
+      where: { tenantId_name: { tenantId: tenant.id, name: s.name } },
+      update: { durationMinutes: s.durationMinutes, priceCents: eurToCents(s.price), isActive: true, currency: "EUR" },
+      create: {
+        tenantId: tenant.id,
+        name: s.name,
+        durationMinutes: s.durationMinutes,
+        priceCents: eurToCents(s.price),
+        currency: "EUR",
+        isActive: true
+      }
+    });
+    services.push(created);
+  }
+
+  // 6) Availability rules: Mon–Fri 10:00–19:00, lunch 14:00–15:00
+  const weekdays = [1, 2, 3, 4, 5];
+  for (const staff of [staffMaria, staffAlexey]) {
+    for (const wd of weekdays) {
+      await prisma.availabilityRule.upsert({
+        where: { tenantId_staffId_weekday: { tenantId: tenant.id, staffId: staff.id, weekday: wd } },
+        update: {
+          startMinute: timeToMinutes("10:00"),
+          endMinute: timeToMinutes("19:00"),
+          breakStartMinute: timeToMinutes("14:00"),
+          breakEndMinute: timeToMinutes("15:00")
+        },
+        create: {
+          tenantId: tenant.id,
+          staffId: staff.id,
+          weekday: wd,
+          startMinute: timeToMinutes("10:00"),
+          endMinute: timeToMinutes("19:00"),
+          breakStartMinute: timeToMinutes("14:00"),
+          breakEndMinute: timeToMinutes("15:00")
+        }
+      });
+    }
+  }
+
+  // 7) Clients
+  const clientsSeed = [
+    { fullName: "Ирина Петрова", phone: "+49 000 000001", consent: true },
+    { fullName: "Олег Смирнов", phone: "+49 000 000002", consent: true },
+    { fullName: "Анна Иванова", phone: "+49 000 000003", consent: false }
+  ];
+
+  const clients = [];
+  for (const c of clientsSeed) {
+    const client = await prisma.client.upsert({
+      where: { tenantId_phone: { tenantId: tenant.id, phone: c.phone } },
+      update: { fullName: c.fullName, consentMarketing: c.consent, consentAt: c.consent ? new Date() : null },
+      create: {
+        tenantId: tenant.id,
+        fullName: c.fullName,
+        phone: c.phone,
+        consentMarketing: c.consent,
+        consentAt: c.consent ? new Date() : null
+      }
+    });
+    clients.push(client);
+  }
+
+  // 8) Finance categories
+  const categories = ["Услуги", "Расходники", "Аренда", "Зарплата"];
+  const categoryMap: Record<string, string> = {};
+  for (const name of categories) {
+    const cat = await prisma.ledgerCategory.upsert({
+      where: { tenantId_name: { tenantId: tenant.id, name } },
+      update: {},
+      create: { tenantId: tenant.id, name }
+    });
+    categoryMap[name] = cat.id;
+  }
+
+  // 9) Demo ledger transactions
+  const now = new Date();
+  await prisma.ledgerTransaction.createMany({
+    data: [
+      {
+        tenantId: tenant.id,
+        categoryId: categoryMap["Услуги"],
+        type: LedgerType.income,
+        amountCents: eurToCents(120),
+        currency: "EUR",
+        occurredAt: subDays(now, 3),
+        description: "Выручка за день (демо)"
+      },
+      {
+        tenantId: tenant.id,
+        categoryId: categoryMap["Расходники"],
+        type: LedgerType.expense,
+        amountCents: eurToCents(18.5),
+        currency: "EUR",
+        occurredAt: subDays(now, 2),
+        description: "Покупка расходников (демо)"
+      },
+      {
+        tenantId: tenant.id,
+        categoryId: categoryMap["Аренда"],
+        type: LedgerType.expense,
+        amountCents: eurToCents(60),
+        currency: "EUR",
+        occurredAt: subDays(now, 1),
+        description: "Часть аренды (демо)"
+      }
+    ],
+    skipDuplicates: true
+  });
+
+  // 10) Payroll rules
+  await prisma.payrollRule.createMany({
+    data: [
+      {
+        tenantId: tenant.id,
+        staffId: staffMaria.id,
+        ruleType: PayrollRuleType.percent,
+        percentBps: 3000,
+        isActive: true
+      },
+      {
+        tenantId: tenant.id,
+        staffId: staffAlexey.id,
+        ruleType: PayrollRuleType.mixed,
+        percentBps: 2500,
+        monthlyFixedCents: eurToCents(500),
+        isActive: true
+      }
+    ],
+    skipDuplicates: true
+  });
+
+  // 11) Message templates (RU) for Telegram + WhatsApp
+  const templates = [
+    {
+      key: "booking_confirmation",
+      title: "Подтверждение записи",
+      body:
+        "Здравствуйте, {clientName}! Вы записаны на услугу «{serviceName}» {dateTime} к мастеру {staffName}. Стоимость: {price}."
+    },
+    {
+      key: "reminder_24h",
+      title: "Напоминание за 24 часа",
+      body:
+        "Напоминаем: завтра {dateTime} у вас запись на «{serviceName}» к мастеру {staffName}. Если планы изменились — ответьте на это сообщение."
+    },
+    {
+      key: "reminder_2h",
+      title: "Напоминание за 2 часа",
+      body:
+        "Скоро встречаемся! Через 2 часа ({dateTime}) запись на «{serviceName}» к мастеру {staffName}. Ждём вас 🙂"
+    },
+    {
+      key: "cancellation",
+      title: "Отмена записи",
+      body:
+        "Запись на «{serviceName}» {dateTime} отменена. Если хотите перенести — выберите новое время на сайте."
+    }
+  ];
+
+  for (const t of templates) {
+    for (const ch of [MessageChannel.telegram, MessageChannel.whatsapp]) {
+      await prisma.messageTemplate.upsert({
+        where: { tenantId_key_channel: { tenantId: tenant.id, key: t.key, channel: ch } },
+        update: { title: t.title, body: t.body, isActive: true },
+        create: {
+          tenantId: tenant.id,
+          key: t.key,
+          channel: ch,
+          title: t.title,
+          body: t.body,
+          isActive: true
+        }
+      });
+    }
+  }
+
+  // 12) Demo bookings: 3 upcoming + 2 past
+  const serviceMen = services.find(s => s.name === "Стрижка мужская")!;
+  const serviceWomen = services.find(s => s.name === "Стрижка женская")!;
+  const serviceMani = services.find(s => s.name === "Маникюр")!;
+  const serviceColor = services.find(s => s.name === "Окрашивание")!;
+
+  // Удобные даты
+  const today0 = startOfDay(new Date());
+  const d1 = addDays(today0, 1);
+  const d2 = addDays(today0, 2);
+  const d3 = addDays(today0, 3);
+  const past1 = subDays(today0, 5);
+  const past2 = subDays(today0, 12);
+
+  function atDay(day: Date, hh: number, mm: number) {
+    return setMinutes(setHours(day, hh), mm);
+  }
+
+  // Чтобы не плодить дубликаты — очистим старые демо-записи на этих датах
+  await prisma.booking.deleteMany({
+    where: {
+      tenantId: tenant.id,
+      startAt: { gte: subDays(today0, 30), lte: addDays(today0, 30) }
+    }
+  });
+
+  await prisma.booking.createMany({
+    data: [
+      // Будущие (3)
+      {
+        tenantId: tenant.id,
+        serviceId: serviceMen.id,
+        staffId: staffMaria.id,
+        clientId: clients[0].id,
+        startAt: atDay(d1, 11, 0),
+        endAt: atDay(d1, 11, 45),
+        status: BookingStatus.planned,
+        priceCents: serviceMen.priceCents,
+        currency: "EUR",
+        notes: "Демо-запись"
+      },
+      {
+        tenantId: tenant.id,
+        serviceId: serviceMani.id,
+        staffId: staffAlexey.id,
+        clientId: clients[1].id,
+        startAt: atDay(d2, 16, 0),
+        endAt: atDay(d2, 17, 0),
+        status: BookingStatus.planned,
+        priceCents: serviceMani.priceCents,
+        currency: "EUR"
+      },
+      {
+        tenantId: tenant.id,
+        serviceId: serviceColor.id,
+        staffId: staffMaria.id,
+        clientId: clients[2].id,
+        startAt: atDay(d3, 10, 0),
+        endAt: atDay(d3, 12, 0),
+        status: BookingStatus.planned,
+        priceCents: serviceColor.priceCents,
+        currency: "EUR"
+      },
+
+      // Прошлые (2) со статусами
+      {
+        tenantId: tenant.id,
+        serviceId: serviceWomen.id,
+        staffId: staffAlexey.id,
+        clientId: clients[0].id,
+        startAt: atDay(past1, 12, 0),
+        endAt: atDay(past1, 13, 0),
+        status: BookingStatus.arrived,
+        priceCents: serviceWomen.priceCents,
+        currency: "EUR"
+      },
+      {
+        tenantId: tenant.id,
+        serviceId: serviceMen.id,
+        staffId: staffMaria.id,
+        clientId: clients[1].id,
+        startAt: atDay(past2, 15, 0),
+        endAt: atDay(past2, 15, 45),
+        status: BookingStatus.no_show,
+        priceCents: serviceMen.priceCents,
+        currency: "EUR",
+        cancelledReason: "Клиент не пришёл (демо)"
+      }
+    ]
+  });
+
+  console.log("✅ Seed выполнен: tenant lime + пользователи + услуги + расписание + клиенты + записи + финансы + payroll + шаблоны");
+}
+
+main()
+  .catch((e) => {
+    console.error("❌ Ошибка seed:", e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
+

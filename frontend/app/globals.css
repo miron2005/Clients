@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Базовые стили */
+html, body {
+  height: 100%;
+}
+
+body {
+  @apply bg-zinc-950 text-zinc-100;
+}
+
+a {
+  @apply text-inherit;
+}
+

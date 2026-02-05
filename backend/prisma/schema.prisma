@@ -1,0 +1,498 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  owner
+  admin
+  staff
+  client
+}
+
+enum BookingStatus {
+  planned
+  arrived
+  no_show
+  cancelled
+}
+
+enum LedgerType {
+  income
+  expense
+  refund
+}
+
+enum PayrollRuleType {
+  fixed
+  percent
+  mixed
+}
+
+enum PayrollPeriodStatus {
+  open
+  closed
+}
+
+enum MessageChannel {
+  telegram
+  whatsapp
+}
+
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  timezone  String   @default("Europe/Berlin")
+  currency  String   @default("EUR")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships        Membership[]
+  staff              StaffProfile[]
+  services           Service[]
+  availabilityRules  AvailabilityRule[]
+  clients            Client[]
+  tags               Tag[]
+  clientTags         ClientTag[]
+  bookings           Booking[]
+  bookingHolds       BookingHold[]
+  bookingHistory     BookingHistory[]
+  ledgerCategories   LedgerCategory[]
+  ledgerTx           LedgerTransaction[]
+  dayCloses          DayClose[]
+  payrollRules       PayrollRule[]
+  payrollPeriods     PayrollPeriod[]
+  payrollResults     PayrollResult[]
+  payrollAdjustments PayrollAdjustment[]
+  messageTemplates   MessageTemplate[]
+  auditLogs          AuditLog[]
+  segments           ClientSegment[]
+  complianceRequests ComplianceRequest[]
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships   Membership[]
+  refreshTokens RefreshToken[]
+  staffProfiles StaffProfile[]
+  auditLogs     AuditLog[] @relation("AuditActor")
+}
+
+model Membership {
+  id        String   @id @default(uuid())
+  tenantId  String
+  userId    String
+  role      Role
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([tenantId, role])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenId   String   @unique
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  userAgent String?
+  ip        String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model StaffProfile {
+  id          String   @id @default(uuid())
+  tenantId    String
+  userId      String
+  displayName String
+  phone       String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  availabilityRules AvailabilityRule[]
+  bookings          Booking[]
+  bookingHolds      BookingHold[]   // ✅ фикс для Prisma (обратная сторона BookingHold.staff)
+
+  payrollRules       PayrollRule[]
+  payrollResults     PayrollResult[]
+  payrollAdjustments PayrollAdjustment[]
+
+  @@unique([tenantId, userId])
+  @@index([tenantId])
+}
+
+model Service {
+  id              String   @id @default(uuid())
+  tenantId        String
+  name            String
+  description     String?
+  durationMinutes Int
+  priceCents      Int
+  currency        String   @default("EUR")
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+  holds    BookingHold[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, isActive])
+}
+
+model AvailabilityRule {
+  id               String   @id @default(uuid())
+  tenantId         String
+  staffId          String
+  weekday          Int      // 1=Пн ... 7=Вс
+  startMinute      Int      // 0..1440
+  endMinute        Int
+  breakStartMinute Int?
+  breakEndMinute   Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  tenant Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  staff  StaffProfile @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, staffId, weekday])
+  @@index([tenantId, staffId])
+}
+
+model Client {
+  id               String   @id @default(uuid())
+  tenantId         String
+  fullName         String
+  phone            String
+  email            String?
+  notes            String?
+  consentMarketing Boolean  @default(false)
+  consentAt        DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  tenant   Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tags     ClientTag[]
+  bookings Booking[]
+
+  @@unique([tenantId, phone])
+  @@index([tenantId, consentMarketing])
+}
+
+model Tag {
+  id        String   @id @default(uuid())
+  tenantId  String
+  name      String
+  color     String?
+  createdAt DateTime @default(now())
+
+  tenant  Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  clients ClientTag[]
+
+  @@unique([tenantId, name])
+}
+
+model ClientTag {
+  id        String   @id @default(uuid())
+  tenantId  String
+  clientId  String
+  tagId     String
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  tag    Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, clientId, tagId])
+  @@index([tenantId, clientId])
+}
+
+model ClientSegment {
+  id          String   @id @default(uuid())
+  tenantId    String
+  name        String
+  description String?
+  filterJson  Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Сегменты вычисляемые (по filterJson), физической связи с Client нет.
+  @@unique([tenantId, name])
+}
+
+model Booking {
+  id              String        @id @default(uuid())
+  tenantId        String
+  serviceId       String
+  staffId         String
+  clientId        String
+  startAt         DateTime
+  endAt           DateTime
+  status          BookingStatus @default(planned)
+  priceCents      Int
+  currency        String        @default("EUR")
+  notes           String?
+  internalNote    String?
+  createdByUserId String?
+  cancelledReason String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  tenant  Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service Service      @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  staff   StaffProfile @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  client  Client       @relation(fields: [clientId], references: [id], onDelete: Restrict)
+
+  history  BookingHistory[]
+  ledgerTx LedgerTransaction[]
+
+  @@index([tenantId, startAt])
+  @@index([tenantId, staffId, startAt])
+  @@index([tenantId, clientId])
+}
+
+model BookingHold {
+  id          String   @id @default(uuid())
+  tenantId    String
+  serviceId   String
+  staffId     String
+  startAt     DateTime
+  endAt       DateTime
+  expiresAt   DateTime
+  clientPhone String?
+  ip          String?
+  createdAt   DateTime @default(now())
+
+  tenant  Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service Service      @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  staff   StaffProfile @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, staffId, startAt])
+  @@index([tenantId, expiresAt])
+}
+
+model BookingHistory {
+  id              String        @id @default(uuid())
+  tenantId         String
+  bookingId        String
+  changedByUserId  String?
+  actorRole        Role?
+  action           String
+  statusFrom       BookingStatus?
+  statusTo         BookingStatus?
+  note             String?
+  meta             Json?
+  createdAt        DateTime @default(now())
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, bookingId])
+}
+
+model LedgerCategory {
+  id        String   @id @default(uuid())
+  tenantId  String
+  name      String
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tx     LedgerTransaction[]
+
+  @@unique([tenantId, name])
+}
+
+model LedgerTransaction {
+  id              String     @id @default(uuid())
+  tenantId        String
+  categoryId      String?
+  type            LedgerType
+  amountCents     Int
+  currency        String     @default("EUR")
+  occurredAt      DateTime
+  description     String?
+  bookingId       String?
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category LedgerCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  booking  Booking?        @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, occurredAt])
+  @@index([tenantId, type])
+}
+
+model DayClose {
+  id               String   @id @default(uuid())
+  tenantId          String
+  date              DateTime // дата (00:00)
+  totalIncomeCents  Int      @default(0)
+  totalExpenseCents Int      @default(0)
+  totalRefundCents  Int      @default(0)
+  closedByUserId    String?
+  createdAt         DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, date])
+  @@index([tenantId, date])
+}
+
+model PayrollRule {
+  id               String         @id @default(uuid())
+  tenantId         String
+  staffId          String
+  ruleType         PayrollRuleType
+  percentBps       Int?           // 3000 = 30.00%
+  fixedCents       Int?           // фикс за период
+  monthlyFixedCents Int?          // фикс в месяц (для mixed)
+  effectiveFrom    DateTime       @default(now())
+  isActive         Boolean        @default(true)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  tenant Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  staff  StaffProfile @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, staffId, isActive])
+}
+
+model PayrollPeriod {
+  id              String              @id @default(uuid())
+  tenantId         String
+  startDate        DateTime
+  endDate          DateTime
+  status           PayrollPeriodStatus @default(open)
+  closedAt         DateTime?
+  closedByUserId   String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  results     PayrollResult[]
+  adjustments PayrollAdjustment[]
+
+  @@unique([tenantId, startDate, endDate])
+  @@index([tenantId, status])
+}
+
+model PayrollAdjustment {
+  id          String   @id @default(uuid())
+  tenantId    String
+  periodId    String
+  staffId     String
+  amountCents Int
+  kind        String   // "бонус" | "штраф"
+  reason      String
+  createdAt   DateTime @default(now())
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  period PayrollPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  staff  StaffProfile  @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, periodId])
+}
+
+model PayrollResult {
+  id                   String   @id @default(uuid())
+  tenantId             String
+  periodId             String
+  staffId              String
+  servicesRevenueCents Int      @default(0)
+  commissionCents      Int      @default(0)
+  fixedCents           Int      @default(0)
+  adjustmentsCents     Int      @default(0)
+  totalCents           Int      @default(0)
+  generatedAt          DateTime @default(now())
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  period PayrollPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  staff  StaffProfile  @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, periodId, staffId])
+  @@index([tenantId, periodId])
+}
+
+model MessageTemplate {
+  id        String         @id @default(uuid())
+  tenantId  String
+  key       String         // booking_confirmation, reminder_24h ...
+  channel   MessageChannel
+  title     String?
+  body      String
+  isActive  Boolean        @default(true)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, key, channel])
+  @@index([tenantId, isActive])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  tenantId   String
+  actorUserId String?
+  actorRole  Role?
+  action     String
+  entity     String
+  entityId   String?
+  ip         String?
+  userAgent  String?
+  meta       Json?
+  createdAt  DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actor  User?  @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+}
+
+model ComplianceRequest {
+  id              String   @id @default(uuid())
+  tenantId         String
+  type             String   // export | delete
+  subjectUserId    String?
+  subjectClientId  String?
+  status           String   @default("pending")
+  requestedAt      DateTime @default(now())
+  processedAt      DateTime?
+  meta             Json?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+}
+
