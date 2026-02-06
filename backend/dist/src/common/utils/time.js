@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.parseDateInTzToUtc = parseDateInTzToUtc;
 exports.utcToLocalLabel = utcToLocalLabel;
+exports.utcToDateISOInTz = utcToDateISOInTz;
 exports.addMinutesUtc = addMinutesUtc;
 exports.iso = iso;
 exports.weekdayIsoMon1Sun7 = weekdayIsoMon1Sun7;
@@ -14,6 +15,10 @@ function parseDateInTzToUtc(dateISO, tz) {
 function utcToLocalLabel(dateUtc, tz) {
     const z = (0, date_fns_tz_1.toZonedTime)(dateUtc, tz);
     return (0, date_fns_1.format)(z, "dd.MM.yyyy HH:mm");
+}
+function utcToDateISOInTz(dateUtc, tz) {
+    const z = (0, date_fns_tz_1.toZonedTime)(dateUtc, tz);
+    return (0, date_fns_1.format)(z, "yyyy-MM-dd");
 }
 function addMinutesUtc(baseUtc, minutes) {
     return (0, date_fns_1.addMinutes)(baseUtc, minutes);

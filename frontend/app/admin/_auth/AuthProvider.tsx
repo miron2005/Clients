@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useMemo, useState } from "react";
 import type { AuthSession } from "@/lib/auth-store";
 import { clearSession, loadSession, saveSession } from "@/lib/auth-store";
 import { apiGet, apiPost, DEFAULT_TENANT } from "@/lib/api";
@@ -24,12 +24,10 @@ export function useAuth() {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [session, setSession] = useState<AuthSession | null>(null);
+  // Сразу читаем localStorage, чтобы защищённые страницы не редиректили на /admin/login
+  // до того, как React успеет выполнить useEffect.
+  const [session, setSession] = useState<AuthSession | null>(() => loadSession());
   const tenantSlug = DEFAULT_TENANT;
-
-  useEffect(() => {
-    setSession(loadSession());
-  }, []);
 
   const token = session?.accessToken ?? null;
 
@@ -73,9 +71,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<AuthContextValue>(
     () => ({ session, token, tenantSlug, login, logout, refresh, ensureMe }),
-    [session, token]
+    [session, token, tenantSlug]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
-

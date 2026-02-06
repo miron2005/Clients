@@ -4,7 +4,8 @@ const client_1 = require("@prisma/client");
 const bcrypt = require("bcryptjs");
 const date_fns_1 = require("date-fns");
 const prisma = new client_1.PrismaClient();
-function eurToCents(value) {
+function moneyToCents(value) {
+    // Для RUB это "копейки" (value в рублях).
     return Math.round(value * 100);
 }
 function timeToMinutes(hhmm) {
@@ -20,11 +21,11 @@ async function upsertUser(email, name, password) {
     });
 }
 async function main() {
-    // 1) Tenant
+    // 1) Tenant (РФ: RUB + Europe/Moscow)
     const tenant = await prisma.tenant.upsert({
         where: { slug: "lime" },
-        update: { name: "Демо-салон «Лайм»", timezone: "Europe/Berlin", currency: "EUR" },
-        create: { name: "Демо-салон «Лайм»", slug: "lime", timezone: "Europe/Berlin", currency: "EUR" }
+        update: { name: "Демо-салон «Лайм»", timezone: "Europe/Moscow", currency: "RUB" },
+        create: { name: "Демо-салон «Лайм»", slug: "lime", timezone: "Europe/Moscow", currency: "RUB" }
     });
     // 2) Users
     const admin = await upsertUser("admin@lime.local", "Администратор", "Admin123!");
@@ -57,24 +58,24 @@ async function main() {
         update: { displayName: "Алексей", isActive: true },
         create: { tenantId: tenant.id, userId: master2.id, displayName: "Алексей", isActive: true }
     });
-    // 5) Services
+    // 5) Services (цены в RUB)
     const servicesSeed = [
-        { name: "Стрижка мужская", durationMinutes: 45, price: 25 },
-        { name: "Стрижка женская", durationMinutes: 60, price: 35 },
-        { name: "Маникюр", durationMinutes: 60, price: 30 },
-        { name: "Окрашивание", durationMinutes: 120, price: 80 }
+        { name: "Стрижка мужская", durationMinutes: 45, price: 1500 },
+        { name: "Стрижка женская", durationMinutes: 60, price: 2500 },
+        { name: "Маникюр", durationMinutes: 60, price: 2000 },
+        { name: "Окрашивание", durationMinutes: 120, price: 6000 }
     ];
     const services = [];
     for (const s of servicesSeed) {
         const created = await prisma.service.upsert({
             where: { tenantId_name: { tenantId: tenant.id, name: s.name } },
-            update: { durationMinutes: s.durationMinutes, priceCents: eurToCents(s.price), isActive: true, currency: "EUR" },
+            update: { durationMinutes: s.durationMinutes, priceCents: moneyToCents(s.price), isActive: true, currency: "RUB" },
             create: {
                 tenantId: tenant.id,
                 name: s.name,
                 durationMinutes: s.durationMinutes,
-                priceCents: eurToCents(s.price),
-                currency: "EUR",
+                priceCents: moneyToCents(s.price),
+                currency: "RUB",
                 isActive: true
             }
         });
@@ -104,11 +105,11 @@ async function main() {
             });
         }
     }
-    // 7) Clients
+    // 7) Clients (+7, без пробелов — чтобы ключ tenantId_phone был чистый)
     const clientsSeed = [
-        { fullName: "Ирина Петрова", phone: "+49 000 000001", consent: true },
-        { fullName: "Олег Смирнов", phone: "+49 000 000002", consent: true },
-        { fullName: "Анна Иванова", phone: "+49 000 000003", consent: false }
+        { fullName: "Ирина Петрова", phone: "+79000000001", consent: true },
+        { fullName: "Олег Смирнов", phone: "+79000000002", consent: true },
+        { fullName: "Анна Иванова", phone: "+79000000003", consent: false }
     ];
     const clients = [];
     for (const c of clientsSeed) {
@@ -136,7 +137,7 @@ async function main() {
         });
         categoryMap[name] = cat.id;
     }
-    // 9) Demo ledger transactions
+    // 9) Demo ledger transactions (RUB)
     const now = new Date();
     await prisma.ledgerTransaction.createMany({
         data: [
@@ -144,8 +145,8 @@ async function main() {
                 tenantId: tenant.id,
                 categoryId: categoryMap["Услуги"],
                 type: client_1.LedgerType.income,
-                amountCents: eurToCents(120),
-                currency: "EUR",
+                amountCents: moneyToCents(12000),
+                currency: "RUB",
                 occurredAt: (0, date_fns_1.subDays)(now, 3),
                 description: "Выручка за день (демо)"
             },
@@ -153,8 +154,8 @@ async function main() {
                 tenantId: tenant.id,
                 categoryId: categoryMap["Расходники"],
                 type: client_1.LedgerType.expense,
-                amountCents: eurToCents(18.5),
-                currency: "EUR",
+                amountCents: moneyToCents(1850),
+                currency: "RUB",
                 occurredAt: (0, date_fns_1.subDays)(now, 2),
                 description: "Покупка расходников (демо)"
             },
@@ -162,8 +163,8 @@ async function main() {
                 tenantId: tenant.id,
                 categoryId: categoryMap["Аренда"],
                 type: client_1.LedgerType.expense,
-                amountCents: eurToCents(60),
-                currency: "EUR",
+                amountCents: moneyToCents(6000),
+                currency: "RUB",
                 occurredAt: (0, date_fns_1.subDays)(now, 1),
                 description: "Часть аренды (демо)"
             }
@@ -185,13 +186,13 @@ async function main() {
                 staffId: staffAlexey.id,
                 ruleType: client_1.PayrollRuleType.mixed,
                 percentBps: 2500,
-                monthlyFixedCents: eurToCents(500),
+                monthlyFixedCents: moneyToCents(60000),
                 isActive: true
             }
         ],
         skipDuplicates: true
     });
-    // 11) Message templates (RU) for Telegram + WhatsApp
+    // 11) Message templates (RU)
     const templates = [
         {
             key: "booking_confirmation",
@@ -235,7 +236,6 @@ async function main() {
     const serviceWomen = services.find(s => s.name === "Стрижка женская");
     const serviceMani = services.find(s => s.name === "Маникюр");
     const serviceColor = services.find(s => s.name === "Окрашивание");
-    // Удобные даты
     const today0 = (0, date_fns_1.startOfDay)(new Date());
     const d1 = (0, date_fns_1.addDays)(today0, 1);
     const d2 = (0, date_fns_1.addDays)(today0, 2);
@@ -245,7 +245,6 @@ async function main() {
     function atDay(day, hh, mm) {
         return (0, date_fns_1.setMinutes)((0, date_fns_1.setHours)(day, hh), mm);
     }
-    // Чтобы не плодить дубликаты — очистим старые демо-записи на этих датах
     await prisma.booking.deleteMany({
         where: {
             tenantId: tenant.id,
@@ -254,7 +253,6 @@ async function main() {
     });
     await prisma.booking.createMany({
         data: [
-            // Будущие (3)
             {
                 tenantId: tenant.id,
                 serviceId: serviceMen.id,
@@ -264,7 +262,7 @@ async function main() {
                 endAt: atDay(d1, 11, 45),
                 status: client_1.BookingStatus.planned,
                 priceCents: serviceMen.priceCents,
-                currency: "EUR",
+                currency: "RUB",
                 notes: "Демо-запись"
             },
             {
@@ -276,7 +274,7 @@ async function main() {
                 endAt: atDay(d2, 17, 0),
                 status: client_1.BookingStatus.planned,
                 priceCents: serviceMani.priceCents,
-                currency: "EUR"
+                currency: "RUB"
             },
             {
                 tenantId: tenant.id,
@@ -287,9 +285,8 @@ async function main() {
                 endAt: atDay(d3, 12, 0),
                 status: client_1.BookingStatus.planned,
                 priceCents: serviceColor.priceCents,
-                currency: "EUR"
+                currency: "RUB"
             },
-            // Прошлые (2) со статусами
             {
                 tenantId: tenant.id,
                 serviceId: serviceWomen.id,
@@ -299,7 +296,7 @@ async function main() {
                 endAt: atDay(past1, 13, 0),
                 status: client_1.BookingStatus.arrived,
                 priceCents: serviceWomen.priceCents,
-                currency: "EUR"
+                currency: "RUB"
             },
             {
                 tenantId: tenant.id,
@@ -310,12 +307,12 @@ async function main() {
                 endAt: atDay(past2, 15, 45),
                 status: client_1.BookingStatus.no_show,
                 priceCents: serviceMen.priceCents,
-                currency: "EUR",
+                currency: "RUB",
                 cancelledReason: "Клиент не пришёл (демо)"
             }
         ]
     });
-    console.log("✅ Seed выполнен: tenant lime + пользователи + услуги + расписание + клиенты + записи + финансы + payroll + шаблоны");
+    console.log("✅ Seed выполнен (RUB/+7): tenant lime + пользователи + услуги + расписание + клиенты + записи + финансы + payroll + шаблоны");
 }
 main()
     .catch((e) => {

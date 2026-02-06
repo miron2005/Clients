@@ -5,6 +5,21 @@ import { addSeconds } from "date-fns";
 import { BookingStatus, Role } from "@prisma/client";
 import { RemindersService } from "../jobs/reminders.service";
 
+function normalizePhone(raw: string): string {
+  const s = (raw ?? "").trim();
+  if (!s) return "";
+  // вычищаем пробелы/скобки/дефисы
+  const cleaned = s.replace(/[()\s-]/g, "");
+  if (cleaned.startsWith("+")) return cleaned;
+
+  // если только цифры — попробуем привести к +7XXXXXXXXXX
+  const digits = cleaned.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("8")) return `+7${digits.slice(1)}`;
+  if (digits.length === 11 && digits.startsWith("7")) return `+${digits}`;
+  if (digits.length >= 10 && digits.length <= 15) return `+${digits}`;
+  return cleaned;
+}
+
 @Injectable()
 export class BookingsService {
   constructor(
@@ -29,7 +44,6 @@ export class BookingsService {
     const startAt = new Date(args.startAtIso);
     if (Number.isNaN(startAt.getTime())) throw new BadRequestException("Некорректный startAt.");
 
-    // Получаем услугу и вычисляем endAt
     const service = await this.prisma.service.findFirst({
       where: { id: args.serviceId, tenantId: args.tenantId, isActive: true }
     });
@@ -37,8 +51,7 @@ export class BookingsService {
 
     const endAt = new Date(startAt.getTime() + service.durationMinutes * 60_000);
 
-    // Проверяем, что слот реально свободен (через SlotsService на дату)
-    const dateLocal = args.startAtIso.slice(0, 10); // yyyy-mm-dd (UTC), но для проверки достаточно в рамках dev
+    const dateLocal = args.startAtIso.slice(0, 10);
     const slots = await this.slots.listSlots({
       tenantId: args.tenantId,
       tenantTz: args.tenantTz,
@@ -48,9 +61,7 @@ export class BookingsService {
     });
 
     const exists = slots.some((s) => s.startAt === startAt.toISOString());
-    if (!exists) {
-      throw new ConflictException("Выбранное время уже занято. Обновите список слотов.");
-    }
+    if (!exists) throw new ConflictException("Выбранное время уже занято. Обновите список слотов.");
 
     const expiresAt = addSeconds(new Date(), this.holdTtlSeconds());
 
@@ -69,8 +80,7 @@ export class BookingsService {
       });
 
       return { holdId: hold.id, expiresAt: hold.expiresAt.toISOString() };
-    } catch (e: any) {
-      // unique constraint: tenantId + staffId + startAt
+    } catch {
       throw new ConflictException("Это время только что забронировали. Выберите другое.");
     }
   }
@@ -94,7 +104,6 @@ export class BookingsService {
       if (!hold) throw new NotFoundException("Hold не найден (время не зафиксировано).");
       if (hold.expiresAt.getTime() <= now.getTime()) throw new ConflictException("Hold истёк. Выберите время заново.");
 
-      // Проверяем дубли
       const conflict = await tx.booking.findFirst({
         where: {
           tenantId: args.tenantId,
@@ -105,9 +114,11 @@ export class BookingsService {
       });
       if (conflict) throw new ConflictException("Это время уже занято. Выберите другое.");
 
-      // Клиент (upsert по телефону)
+      const phone = normalizePhone(args.clientPhone);
+      if (!phone) throw new BadRequestException("Телефон клиента обязателен.");
+
       const client = await tx.client.upsert({
-        where: { tenantId_phone: { tenantId: args.tenantId, phone: args.clientPhone } },
+        where: { tenantId_phone: { tenantId: args.tenantId, phone } },
         update: {
           fullName: args.clientName,
           consentMarketing: args.consentMarketing,
@@ -116,13 +127,12 @@ export class BookingsService {
         create: {
           tenantId: args.tenantId,
           fullName: args.clientName,
-          phone: args.clientPhone,
+          phone,
           consentMarketing: args.consentMarketing,
           consentAt: args.consentMarketing ? now : null
         }
       });
 
-      // Услуга для цены
       const service = await tx.service.findFirst({
         where: { id: hold.serviceId, tenantId: args.tenantId }
       });
@@ -141,11 +151,7 @@ export class BookingsService {
           currency: service.currency,
           notes: args.notes
         },
-        include: {
-          service: true,
-          staff: true,
-          client: true
-        }
+        include: { service: true, staff: true, client: true }
       });
 
       await tx.bookingHistory.create({
@@ -161,7 +167,6 @@ export class BookingsService {
 
       await tx.bookingHold.delete({ where: { id: hold.id } });
 
-      // Планируем напоминания (только если есть согласие)
       if (client.consentMarketing) {
         await this.reminders.scheduleForBooking(booking.id);
       }
@@ -182,7 +187,7 @@ export class BookingsService {
     });
   }
 
-  // Админ: список записей в диапазоне (для календаря)
+  // Админ: список записей в диапазоне
   async adminListBookings(args: {
     tenantId: string;
     from: Date;
@@ -193,7 +198,6 @@ export class BookingsService {
   }) {
     let staffFilterId = args.staffId;
 
-    // Если роль staff — показываем только его записи
     if (args.requesterRole === Role.staff) {
       const sp = await this.prisma.staffProfile.findFirst({
         where: { tenantId: args.tenantId, userId: args.requesterUserId, isActive: true }
@@ -208,13 +212,132 @@ export class BookingsService {
         startAt: { gte: args.from, lt: args.to },
         ...(staffFilterId ? { staffId: staffFilterId } : {})
       },
-      include: {
-        service: true,
-        staff: true,
-        client: true
-      },
+      include: { service: true, staff: true, client: true },
       orderBy: [{ startAt: "asc" }]
     });
+  }
+
+  // Админ: создание записи вручную (из календаря)
+  async adminCreateBooking(args: {
+    tenantId: string;
+    actorUserId: string;
+    actorRole: Role;
+    serviceId: string;
+    staffId?: string;
+    startAtIso: string;
+    clientName: string;
+    clientPhone: string;
+    consentMarketing: boolean;
+    notes?: string;
+    internalNote?: string;
+  }) {
+    const startAt = new Date(args.startAtIso);
+    if (Number.isNaN(startAt.getTime())) throw new BadRequestException("Некорректный startAt.");
+
+    const phone = normalizePhone(args.clientPhone);
+    if (!phone) throw new BadRequestException("Телефон клиента обязателен.");
+
+    const service = await this.prisma.service.findFirst({
+      where: { id: args.serviceId, tenantId: args.tenantId, isActive: true }
+    });
+    if (!service) throw new NotFoundException("Услуга не найдена.");
+
+    let staffId = args.staffId;
+
+    if (args.actorRole === Role.staff) {
+      // staff может создавать только себе
+      const sp = await this.prisma.staffProfile.findFirst({
+        where: { tenantId: args.tenantId, userId: args.actorUserId, isActive: true }
+      });
+      if (!sp) throw new BadRequestException("Профиль сотрудника не найден.");
+      staffId = sp.id;
+    } else {
+      if (!staffId) throw new BadRequestException("staffId обязателен для admin/owner.");
+      const sp = await this.prisma.staffProfile.findFirst({
+        where: { tenantId: args.tenantId, id: staffId, isActive: true }
+      });
+      if (!sp) throw new BadRequestException("Мастер не найден или неактивен.");
+    }
+
+    const endAt = new Date(startAt.getTime() + service.durationMinutes * 60_000);
+
+    // Проверка пересечений с существующими записями
+    const overlap = await this.prisma.booking.findFirst({
+      where: {
+        tenantId: args.tenantId,
+        staffId: staffId!,
+        status: { not: BookingStatus.cancelled },
+        startAt: { lt: endAt },
+        endAt: { gt: startAt }
+      }
+    });
+    if (overlap) throw new ConflictException("В это время уже есть запись. Выберите другой слот.");
+
+    // Проверка активных hold (публичная бронь)
+    const now = new Date();
+    const holdOverlap = await this.prisma.bookingHold.findFirst({
+      where: {
+        tenantId: args.tenantId,
+        staffId: staffId!,
+        expiresAt: { gt: now },
+        startAt: { lt: endAt },
+        endAt: { gt: startAt }
+      }
+    });
+    if (holdOverlap) throw new ConflictException("Слот сейчас удерживается онлайн-записью (hold). Подождите или выберите другое время.");
+
+    // Клиент
+    const client = await this.prisma.client.upsert({
+      where: { tenantId_phone: { tenantId: args.tenantId, phone } },
+      update: {
+        fullName: args.clientName,
+        consentMarketing: args.consentMarketing,
+        consentAt: args.consentMarketing ? now : null
+      },
+      create: {
+        tenantId: args.tenantId,
+        fullName: args.clientName,
+        phone,
+        consentMarketing: args.consentMarketing,
+        consentAt: args.consentMarketing ? now : null
+      }
+    });
+
+    const booking = await this.prisma.booking.create({
+      data: {
+        tenantId: args.tenantId,
+        serviceId: service.id,
+        staffId: staffId!,
+        clientId: client.id,
+        startAt,
+        endAt,
+        status: BookingStatus.planned,
+        priceCents: service.priceCents,
+        currency: service.currency,
+        notes: args.notes,
+        internalNote: args.internalNote,
+        createdByUserId: args.actorUserId
+      },
+      include: { service: true, staff: true, client: true }
+    });
+
+    await this.prisma.bookingHistory.create({
+      data: {
+        tenantId: args.tenantId,
+        bookingId: booking.id,
+        changedByUserId: args.actorUserId,
+        actorRole: args.actorRole,
+        action: "created_admin",
+        statusTo: BookingStatus.planned,
+        note: "Создано из админ-календаря"
+      }
+    });
+
+    if (client.consentMarketing) {
+      await this.reminders.scheduleForBooking(booking.id);
+    }
+
+    return { ok: true, booking };
   }
 
   // Админ: смена статуса
@@ -233,7 +356,6 @@ export class BookingsService {
     });
     if (!booking) throw new NotFoundException("Запись не найдена.");
 
-    // staff может менять статус только своих записей
     if (args.actorRole === Role.staff) {
       const sp = await this.prisma.staffProfile.findFirst({
         where: { tenantId: args.tenantId, userId: args.actorUserId, isActive: true }
@@ -268,4 +390,3 @@ export class BookingsService {
     return { ok: true, booking: { id: updated.id, status: updated.status } };
   }
 }
-

@@ -20,6 +20,7 @@ const tenant_required_guard_1 = require("../tenancy/tenant-required.guard");
 const current_user_decorator_1 = require("../common/decorators/current-user.decorator");
 const bookings_service_1 = require("./bookings.service");
 const admin_update_status_dto_1 = require("./dto/admin-update-status.dto");
+const admin_create_booking_dto_1 = require("./dto/admin-create-booking.dto");
 let AdminBookingsController = class AdminBookingsController {
     bookings;
     constructor(bookings) {
@@ -35,6 +36,21 @@ let AdminBookingsController = class AdminBookingsController {
             staffId,
             requesterRole: user.role,
             requesterUserId: user.userId
+        });
+    }
+    async create(user, dto) {
+        return this.bookings.adminCreateBooking({
+            tenantId: user.tenantId,
+            actorUserId: user.userId,
+            actorRole: user.role,
+            serviceId: dto.serviceId,
+            staffId: dto.staffId,
+            startAtIso: dto.startAt,
+            clientName: dto.clientName,
+            clientPhone: dto.clientPhone,
+            consentMarketing: dto.consentMarketing ?? false,
+            notes: dto.notes,
+            internalNote: dto.internalNote
         });
     }
     async updateStatus(user, id, dto) {
@@ -63,6 +79,14 @@ __decorate([
     __metadata("design:paramtypes", [Object, String, String, String]),
     __metadata("design:returntype", Promise)
 ], AdminBookingsController.prototype, "list", null);
+__decorate([
+    (0, common_1.Post)(),
+    __param(0, (0, current_user_decorator_1.CurrentUser)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, admin_create_booking_dto_1.AdminCreateBookingDto]),
+    __metadata("design:returntype", Promise)
+], AdminBookingsController.prototype, "create", null);
 __decorate([
     (0, common_1.Patch)("/:id/status"),
     __param(0, (0, current_user_decorator_1.CurrentUser)()),

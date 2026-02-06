@@ -1,10 +1,11 @@
-import { Body, Controller, Get, Param, Patch, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { ApiBearerAuth, ApiHeader, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { TenantRequiredGuard } from "../tenancy/tenant-required.guard";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { BookingsService } from "./bookings.service";
 import { AdminUpdateBookingStatusDto } from "./dto/admin-update-status.dto";
+import { AdminCreateBookingDto } from "./dto/admin-create-booking.dto";
 import { Role } from "@prisma/client";
 
 @ApiTags("Админ: календарь записей")
@@ -38,12 +39,25 @@ export class AdminBookingsController {
     });
   }
 
+  @Post()
+  async create(@CurrentUser() user: any, @Body() dto: AdminCreateBookingDto) {
+    return this.bookings.adminCreateBooking({
+      tenantId: user.tenantId,
+      actorUserId: user.userId,
+      actorRole: user.role as Role,
+      serviceId: dto.serviceId,
+      staffId: dto.staffId,
+      startAtIso: dto.startAt,
+      clientName: dto.clientName,
+      clientPhone: dto.clientPhone,
+      consentMarketing: dto.consentMarketing ?? false,
+      notes: dto.notes,
+      internalNote: dto.internalNote
+    });
+  }
+
   @Patch("/:id/status")
-  async updateStatus(
-    @CurrentUser() user: any,
-    @Param("id") id: string,
-    @Body() dto: AdminUpdateBookingStatusDto
-  ) {
+  async updateStatus(@CurrentUser() user: any, @Param("id") id: string, @Body() dto: AdminUpdateBookingStatusDto) {
     return this.bookings.adminUpdateStatus({
       tenantId: user.tenantId,
       bookingId: id,
@@ -55,4 +69,3 @@ export class AdminBookingsController {
     });
   }
 }
-

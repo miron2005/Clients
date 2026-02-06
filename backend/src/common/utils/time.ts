@@ -11,6 +11,11 @@ export function utcToLocalLabel(dateUtc: Date, tz: string): string {
   return format(z, "dd.MM.yyyy HH:mm");
 }
 
+export function utcToDateISOInTz(dateUtc: Date, tz: string): string {
+  const z = toZonedTime(dateUtc, tz);
+  return format(z, "yyyy-MM-dd");
+}
+
 export function addMinutesUtc(baseUtc: Date, minutes: number): Date {
   return addMinutes(baseUtc, minutes);
 }
@@ -25,4 +30,3 @@ export function weekdayIsoMon1Sun7(dayStartUtc: Date, tz: string): number {
   const map = [7, 1, 2, 3, 4, 5, 6];
   return map[js];
 }
-
